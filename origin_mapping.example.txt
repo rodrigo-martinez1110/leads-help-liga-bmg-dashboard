@@ -1,0 +1,3 @@
+# Configure the real mapping locally or through Streamlit secrets.
+# Format: source phone without real production numbers: label
+0000000000000: exemplo

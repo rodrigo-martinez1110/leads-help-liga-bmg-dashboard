@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+.streamlit/secrets.toml
+dados_raw/
+origin_mapping.txt
+dashboard_data.json
+*.csv
+!tests/fixtures/*.csv
+*.xlsx
+*.xls
+*.zip
+~$*
