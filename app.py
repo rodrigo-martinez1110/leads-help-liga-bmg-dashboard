@@ -20,8 +20,19 @@ st.markdown(
     """
     <style>
       [data-testid="stMetric"] {
-        border-top: 3px solid #F58220;
-        padding: 12px 16px;
+        border-top: 2px solid #F58220;
+        padding: 8px 10px;
+      }
+      [data-testid="stMetricLabel"] * {
+        font-size: 0.78rem !important;
+      }
+      [data-testid="stMetricValue"] * {
+        font-size: clamp(1rem, 1.2vw, 1.3rem) !important;
+        line-height: 1.15;
+        white-space: nowrap;
+      }
+      [data-testid="stMetricDelta"] * {
+        font-size: 0.72rem !important;
       }
     </style>
     """,
@@ -78,12 +89,37 @@ ticket = released / contracts if contracts else 0.0
 kpis = view.kpis
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("Leads no relatório", _fmt_int(kpis["lead_records"]))
-k2.metric("CPFs utilizáveis", _fmt_int(kpis["unique_valid_cpfs"]))
-k3.metric("Produção pós-lead", _fmt_int(kpis["production_postlead_cpfs"]), _fmt_pct(kpis["conversion_rate"]))
-k4.metric("Contratos", _fmt_int(contracts))
-k5.metric("Valor liberado", _fmt_brl(released) if kpis["contracts"] is not None else "n/d")
-k6.metric("Ticket médio", _fmt_brl(ticket) if kpis["contracts"] is not None else "n/d")
+k1.metric(
+    "Leads no relatório",
+    _fmt_int(kpis["lead_records"]),
+    help="Quantidade de registros de lead no período para a origem selecionada, incluindo registros sem CPF válido.",
+)
+k2.metric(
+    "CPFs utilizáveis",
+    _fmt_int(kpis["unique_valid_cpfs"]),
+    help="Quantidade de CPFs válidos e únicos na coorte da origem selecionada.",
+)
+k3.metric(
+    "Produção pós-lead",
+    _fmt_int(kpis["production_postlead_cpfs"]),
+    _fmt_pct(kpis["conversion_rate"]),
+    help="CPFs únicos com produção no mesmo dia ou após o primeiro lead. O percentual é calculado sobre os CPFs utilizáveis; associação temporal não prova causalidade.",
+)
+k4.metric(
+    "Contratos",
+    _fmt_int(contracts),
+    help="Total de contratos considerados para a origem, produto e região selecionados.",
+)
+k5.metric(
+    "Valor liberado",
+    _fmt_brl(released) if kpis["contracts"] is not None else "n/d",
+    help="Soma do valor liberado nos contratos considerados pelos filtros de origem, produto e região.",
+)
+k6.metric(
+    "Ticket médio",
+    _fmt_brl(ticket) if kpis["contracts"] is not None else "n/d",
+    help="Valor liberado dividido pela quantidade de contratos considerados pelos filtros selecionados.",
+)
 
 st.info(
     f"Período dos leads: {dashboard.period_start or 'n/d'} a {dashboard.period_end or 'n/d'}. "

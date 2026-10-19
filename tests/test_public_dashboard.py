@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
+from streamlit.testing.v1 import AppTest
 
 from data_pipeline import DashboardData, DashboardView
 from public_data import PublicDataError, deserialize_dashboard_data, serialize_dashboard_data
+
+
+def test_kpi_metrics_show_help_for_each_definition():
+    app_path = Path(__file__).parents[1] / "app.py"
+    app = AppTest.from_file(str(app_path)).run()
+
+    assert not app.exception
+    assert len(app.metric) == 6
+    assert all(metric.help.strip() for metric in app.metric)
 
 
 def _dashboard() -> DashboardData:
