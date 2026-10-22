@@ -10,14 +10,14 @@ import pandas as pd
 from data_pipeline import DashboardData, DashboardView
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FRAME_COLUMNS = {
-    "daily": ["data_entrada", "leads_cpf_unicos", "cpfs_pos_lead", "taxa_pos_lead"],
-    "reasons": ["categoria", "leads"],
+    "daily": ["data_entrada", "lead_records", "unique_valid_cpfs", "invalid_or_missing_cpf_records", "unmapped_origin_records", "cpfs_pos_lead", "taxa_pos_lead"],
+    "reasons": ["data_entrada", "categoria", "leads"],
     "production_by_product": ["produto", "contratos", "valor_liberado"],
     "production_by_region": ["regiao", "contratos", "valor_liberado"],
-    "production_scope": ["produto", "regiao", "contratos", "valor_liberado"],
-    "origin_summary": ["origem", "leads", "cpfs_utilizaveis", "cpfs_pos_lead", "taxa_pos_lead", "contratos", "valor_liberado", "ticket_medio"],
+    "production_scope": ["data_entrada", "produto", "regiao", "contratos", "valor_liberado"],
+    "origin_summary": ["data_entrada", "origem", "leads", "cpfs_utilizaveis", "cpfs_pos_lead", "taxa_pos_lead", "contratos", "valor_liberado", "ticket_medio"],
 }
 KPI_KEYS = {
     "lead_records", "unique_valid_cpfs", "invalid_or_missing_cpf_records",

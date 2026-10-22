@@ -303,7 +303,7 @@ def _build_view(
     if not production_available or postlead_contracts.empty:
         product = _empty_production_frame(["produto", "contratos", "valor_liberado"])
         region = _empty_production_frame(["regiao", "contratos", "valor_liberado"])
-        scope = _empty_production_frame(["produto", "regiao", "contratos", "valor_liberado"])
+        scope = _empty_production_frame(["data_entrada", "produto", "regiao", "contratos", "valor_liberado"])
     else:
         product = (
             postlead_contracts.groupby("_product", dropna=False)
@@ -318,39 +318,60 @@ def _build_view(
             .rename(columns={"_region": "regiao"})
         )
         scope = (
-            postlead_contracts.groupby(["_product", "_region"], dropna=False)
+            postlead_contracts.groupby(["_lead_date", "_product", "_region"], dropna=False)
             .agg(contratos=("_contract_id", "nunique"), valor_liberado=("_released_value", "sum"))
             .reset_index()
-            .rename(columns={"_product": "produto", "_region": "regiao"})
+            .rename(columns={"_lead_date": "data_entrada", "_product": "produto", "_region": "regiao"})
         )
 
     postlead_ids = set(cohort_scope.loc[cohort_scope["_cpf"].isin(
         postlead_scope["_cpf"] if postlead_scope is not None else []
     ), "_cpf"])
-    daily = cohort_scope.copy()
-    if daily.empty:
-        daily_frame = pd.DataFrame(columns=["dia", "leads_cpf_unicos", "cpfs_pos_lead", "taxa_pos_lead"])
+    date_columns = [
+        "data_entrada", "lead_records", "unique_valid_cpfs", "invalid_or_missing_cpf_records",
+        "unmapped_origin_records", "cpfs_pos_lead", "taxa_pos_lead",
+    ]
+    if lead_scope.empty:
+        daily_frame = pd.DataFrame(columns=date_columns)
     else:
-        daily["_has_postlead"] = daily["_cpf"].isin(postlead_ids)
-        daily_frame = (
-            daily.groupby("_lead_date", dropna=False)
-            .agg(leads_cpf_unicos=("_cpf", "nunique"), cpfs_pos_lead=("_has_postlead", "sum"))
+        dated_leads = lead_scope[lead_scope["_cohort_date"].notna()].copy()
+        dated_leads["_is_invalid_cpf"] = dated_leads["_cpf"].isna().astype(int)
+        dated_leads["_is_unmapped_origin"] = dated_leads["_origin"].eq(UNKNOWN_ORIGIN).astype(int)
+        daily_records = (
+            dated_leads.groupby("_cohort_date", dropna=False)
+            .agg(
+                lead_records=("_row_order", "size"),
+                invalid_or_missing_cpf_records=("_is_invalid_cpf", "sum"),
+                unmapped_origin_records=("_is_unmapped_origin", "sum"),
+            )
+            .reset_index()
+            .rename(columns={"_cohort_date": "data_entrada"})
+        )
+        daily_cohort = cohort_scope[cohort_scope["_lead_date"].notna()].copy()
+        daily_cohort["_has_postlead"] = daily_cohort["_cpf"].isin(postlead_ids).astype(int)
+        daily_cpfs = (
+            daily_cohort.groupby("_lead_date", dropna=False)
+            .agg(unique_valid_cpfs=("_cpf", "nunique"), cpfs_pos_lead=("_has_postlead", "sum"))
             .reset_index()
             .rename(columns={"_lead_date": "data_entrada"})
         )
-        daily_frame["taxa_pos_lead"] = daily_frame["cpfs_pos_lead"] / daily_frame["leads_cpf_unicos"].replace(0, 1)
+        daily_frame = daily_records.merge(daily_cpfs, on="data_entrada", how="outer")
+        for column in ["lead_records", "unique_valid_cpfs", "invalid_or_missing_cpf_records", "unmapped_origin_records", "cpfs_pos_lead"]:
+            daily_frame[column] = daily_frame[column].fillna(0).astype(int)
+        daily_frame["taxa_pos_lead"] = daily_frame["cpfs_pos_lead"] / daily_frame["unique_valid_cpfs"].replace(0, 1)
+        daily_frame = daily_frame.reindex(columns=date_columns).sort_values("data_entrada").reset_index(drop=True)
 
     without_postlead = cohort_scope[~cohort_scope["_cpf"].isin(postlead_ids)]
     if without_postlead.empty:
-        reasons = pd.DataFrame(columns=["categoria", "leads"])
+        reasons = pd.DataFrame(columns=["data_entrada", "categoria", "leads"])
     else:
         reasons = (
             without_postlead.assign(_reason=without_postlead["_reason"].fillna("Sem informação"))
-            .groupby("_reason")
+            .groupby(["_lead_date", "_reason"], dropna=False)
             .size()
             .reset_index(name="leads")
-            .rename(columns={"_reason": "categoria"})
-            .sort_values("leads", ascending=False)
+            .rename(columns={"_lead_date": "data_entrada", "_reason": "categoria"})
+            .sort_values(["data_entrada", "leads"], ascending=[True, False])
         )
 
     return DashboardView(
@@ -394,6 +415,9 @@ def build_dashboard_data(
     # uma nova tentativa de contato altere a origem dos KPIs.
     first_origin_by_cpf = cohort.set_index("_cpf")["_origin"]
     prepared["_origin"] = prepared["_cpf"].map(first_origin_by_cpf).fillna(prepared["_origin"])
+    first_cohort_date_by_cpf = cohort.set_index("_cpf")["_lead_date"]
+    prepared["_cohort_date"] = prepared["_cpf"].map(first_cohort_date_by_cpf)
+    prepared["_cohort_date"] = prepared["_cohort_date"].fillna(prepared["_lead_date"])
 
     prepared_production = None
     matched_postlead = None
@@ -428,41 +452,58 @@ def build_dashboard_data(
         matched_postlead = matched[matched["_contract_date"] >= matched["_lead_date"]].copy()
 
     origin_labels = sorted(prepared["_origin"].dropna().unique().tolist())
-    summary_rows: list[dict[str, Any]] = []
-    for origin in origin_labels:
-        origin_leads = prepared[prepared["_origin"] == origin]
-        origin_cohort = cohort[cohort["_origin"] == origin]
-        origin_production = (
-            matched_postlead[matched_postlead["_origin"] == origin]
-            if matched_postlead is not None
-            else None
-        )
-        origin_contracts = (
-            origin_production[origin_production["_contract_id"].notna()].drop_duplicates("_contract_id")
-            if origin_production is not None
-            else pd.DataFrame()
-        )
-        released = float(origin_contracts["_released_value"].sum()) if not origin_contracts.empty else None
-        contracts = int(origin_contracts["_contract_id"].nunique()) if not origin_contracts.empty else None
-        postlead_cpfs = int(origin_production["_cpf"].nunique()) if origin_production is not None else None
-        summary_rows.append(
-            {
-                "origem": origin,
-                "leads": int(len(origin_leads)),
-                "cpfs_utilizaveis": int(origin_cohort["_cpf"].nunique()),
-                "cpfs_pos_lead": postlead_cpfs,
-                "taxa_pos_lead": (
-                    postlead_cpfs / origin_cohort["_cpf"].nunique()
-                    if postlead_cpfs is not None and origin_cohort["_cpf"].nunique()
-                    else None
-                ),
-                "contratos": contracts,
-                "valor_liberado": released,
-                "ticket_medio": released / contracts if released is not None and contracts else None,
-            }
-        )
+    origin_leads = (
+        prepared[prepared["_cohort_date"].notna()]
+        .groupby(["_origin", "_cohort_date"], dropna=False)
+        .agg(leads=("_row_order", "size"))
+        .reset_index()
+        .rename(columns={"_cohort_date": "data_entrada"})
+    )
+    origin_cpfs = (
+        cohort[cohort["_lead_date"].notna()]
+        .groupby(["_origin", "_lead_date"], dropna=False)
+        .agg(cpfs_utilizaveis=("_cpf", "nunique"))
+        .reset_index()
+        .rename(columns={"_lead_date": "data_entrada"})
+    )
+    origin_summary = origin_leads.merge(origin_cpfs, on=["_origin", "data_entrada"], how="outer")
 
-    origin_summary = pd.DataFrame(summary_rows)
+    if matched_postlead is not None:
+        origin_conversions = (
+            matched_postlead[matched_postlead["_lead_date"].notna()]
+            .groupby(["_origin", "_lead_date"], dropna=False)
+            .agg(cpfs_pos_lead=("_cpf", "nunique"))
+            .reset_index()
+            .rename(columns={"_lead_date": "data_entrada"})
+        )
+        origin_contracts = matched_postlead[
+            matched_postlead["_contract_id"].notna() & matched_postlead["_lead_date"].notna()
+        ].drop_duplicates("_contract_id")
+        origin_finance = (
+            origin_contracts.groupby(["_origin", "_lead_date"], dropna=False)
+            .agg(contratos=("_contract_id", "nunique"), valor_liberado=("_released_value", "sum"))
+            .reset_index()
+            .rename(columns={"_lead_date": "data_entrada"})
+        )
+        origin_summary = origin_summary.merge(origin_conversions, on=["_origin", "data_entrada"], how="outer")
+        origin_summary = origin_summary.merge(origin_finance, on=["_origin", "data_entrada"], how="outer")
+    else:
+        origin_summary["cpfs_pos_lead"] = None
+        origin_summary["contratos"] = None
+        origin_summary["valor_liberado"] = None
+
+    origin_summary = origin_summary.rename(columns={"_origin": "origem"})
+    for column in ["leads", "cpfs_utilizaveis"]:
+        origin_summary[column] = origin_summary[column].fillna(0).astype(int)
+    if matched_postlead is not None:
+        for column in ["cpfs_pos_lead", "contratos", "valor_liberado"]:
+            origin_summary[column] = origin_summary[column].fillna(0)
+        origin_summary["taxa_pos_lead"] = origin_summary["cpfs_pos_lead"] / origin_summary["cpfs_utilizaveis"].replace(0, 1)
+        origin_summary["ticket_medio"] = origin_summary["valor_liberado"] / origin_summary["contratos"].replace(0, 1)
+    else:
+        origin_summary["taxa_pos_lead"] = None
+        origin_summary["ticket_medio"] = None
+    origin_summary = origin_summary[["data_entrada", "origem", "leads", "cpfs_utilizaveis", "cpfs_pos_lead", "taxa_pos_lead", "contratos", "valor_liberado", "ticket_medio"]].sort_values(["data_entrada", "origem"])
     views: dict[str, DashboardView] = {}
     for origin in [ALL_ORIGINS, *origin_labels]:
         selected_summary = origin_summary if origin == ALL_ORIGINS else origin_summary[origin_summary["origem"] == origin]

@@ -36,3 +36,9 @@ O arquivo público é atualizado junto ao repositório e o Streamlit Cloud o lê
 - Os filtros de origem, produto e região recalculam os KPIs e gráficos a partir das tabelas agregadas.
 - Produção pós-lead exige `ic_producao = 1` e data do contrato igual ou posterior à data de entrada do primeiro lead. É uma associação temporal, não uma prova de causalidade.
 - “Sem produção pós-lead” não significa perda comercial confirmada.
+
+## Filtros do painel
+
+O filtro de período fica visível no corpo principal do painel, logo abaixo do título, e atualiza os KPIs e gráficos para o intervalo selecionado. O eixo temporal usa datas dd/mm e ajusta a frequência das marcações ao intervalo.
+
+O agregado público precisa estar no esquema 2 para suportar o detalhamento diário do período.
