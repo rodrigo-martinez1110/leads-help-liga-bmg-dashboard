@@ -66,7 +66,7 @@ view = select_view(dashboard, selected_origin)
 
 period_start = pd.Timestamp(dashboard.period_start).date()
 period_end = pd.Timestamp(dashboard.period_end).date()
-selected_period = st.date_input(
+selected_period = st.sidebar.date_input(
     "Período dos leads",
     value=(period_start, period_end),
     min_value=period_start,

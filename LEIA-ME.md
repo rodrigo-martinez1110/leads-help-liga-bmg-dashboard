@@ -39,6 +39,6 @@ O arquivo público é atualizado junto ao repositório e o Streamlit Cloud o lê
 
 ## Filtros do painel
 
-O filtro de período fica visível no corpo principal do painel, logo abaixo do título, e atualiza os KPIs e gráficos para o intervalo selecionado. O eixo temporal usa datas dd/mm e ajusta a frequência das marcações ao intervalo.
+O filtro de período fica na barra lateral e atualiza os KPIs e gráficos para o intervalo selecionado. Expanda a barra lateral para escolher as datas. O eixo temporal usa datas dd/mm e ajusta a frequência das marcações ao intervalo.
 
 O agregado público precisa estar no esquema 2 para suportar o detalhamento diário do período.
