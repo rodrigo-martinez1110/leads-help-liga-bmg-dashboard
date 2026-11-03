@@ -15,7 +15,8 @@ import pandas as pd
 ALL_ORIGINS = "Todas"
 UNKNOWN_ORIGIN = "Origem não identificada"
 LEAD_COLUMNS = {"Lead.cpf", "Lead.criadoEm", "Lead.numeroWhatsappOrigem"}
-PRODUCTION_COLUMNS = {"do_cpf_cliente", "dt_contrato", "ic_producao"}
+PRODUCTION_REQUIRED_COLUMNS = {"do_cpf_cliente", "ic_producao"}
+PRODUCTION_DATE_COLUMNS = ("dt_contrato", "dt_referencia")
 SENSITIVE_COLUMNS = {
     "cpf_normalizado",
     "do_cpf_cliente",
@@ -29,6 +30,12 @@ SENSITIVE_COLUMNS = {
 
 class SourceFormatError(ValueError):
     pass
+
+
+def _is_production_frame(columns: set[str]) -> bool:
+    return PRODUCTION_REQUIRED_COLUMNS.issubset(columns) and any(
+        date_column in columns for date_column in PRODUCTION_DATE_COLUMNS
+    )
 
 
 @dataclass(frozen=True)
@@ -163,7 +170,7 @@ def _classify_frames(frames: list[tuple[str, pd.DataFrame]]) -> tuple[pd.DataFra
         columns = set(frame.columns)
         if LEAD_COLUMNS.issubset(columns):
             leads = frame
-        elif PRODUCTION_COLUMNS.issubset(columns):
+        elif _is_production_frame(columns):
             production = frame
         else:
             missing_details.append(f"{name}: não corresponde a leads nem produção")
@@ -177,7 +184,7 @@ def _classify_frames(frames: list[tuple[str, pd.DataFrame]]) -> tuple[pd.DataFra
 
 def _find_production_frame(frames: list[tuple[str, pd.DataFrame]]) -> pd.DataFrame | None:
     for _, frame in frames:
-        if PRODUCTION_COLUMNS.issubset(set(frame.columns)):
+        if _is_production_frame(set(frame.columns)):
             return frame
     return None
 
@@ -194,7 +201,7 @@ def read_sources(
         source_name = "upload"
 
     leads, production = _classify_frames(frames)
-    if production is None and production_source is not None:
+    if production_source is not None:
         extra_frames = (
             _read_path(production_source)
             if isinstance(production_source, Path)
@@ -206,9 +213,51 @@ def read_sources(
         if production is None:
             raise SourceFormatError(
                 "Base de produção não encontrada. Colunas obrigatórias: "
-                + ", ".join(sorted(PRODUCTION_COLUMNS))
+                + ", ".join(sorted(PRODUCTION_REQUIRED_COLUMNS))
+                + ", e uma data em "
+                + " ou ".join(PRODUCTION_DATE_COLUMNS)
             )
     return leads, production
+
+
+def merge_lead_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Combine lead extracts, keeping the latest record per Lead ID and retaining a valid CPF."""
+    if not frames:
+        raise SourceFormatError("Nenhuma base de leads foi informada.")
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    if "Lead.leadId" not in combined.columns:
+        return combined
+
+    combined = combined.copy()
+    combined["_source_order"] = range(len(combined))
+    combined["_merge_key"] = combined["Lead.leadId"].fillna("").astype(str).str.strip()
+    combined.loc[combined["_merge_key"].eq(""), "_merge_key"] = pd.NA
+    if "Lead.atualizadoEm" in combined.columns:
+        combined["_updated_at"] = _parse_datetime(combined["Lead.atualizadoEm"])
+    else:
+        combined["_updated_at"] = pd.NaT
+
+    valid_cpf_rows = combined[
+        combined["_merge_key"].notna() & combined["Lead.cpf"].map(_normalize_cpf).notna()
+    ]
+    valid_cpfs = (
+        valid_cpf_rows.sort_values(["_updated_at", "_source_order"], kind="stable", na_position="first")
+        .drop_duplicates("_merge_key", keep="last")
+        .set_index("_merge_key")["Lead.cpf"]
+    )
+
+    identified = combined[combined["_merge_key"].notna()]
+    identified = (
+        identified.sort_values(["_updated_at", "_source_order"], kind="stable", na_position="first")
+        .drop_duplicates("_merge_key", keep="last")
+    )
+    unidentified = combined[combined["_merge_key"].isna()]
+    result = pd.concat([identified, unidentified], ignore_index=True, sort=False)
+    restored_cpf = result["_merge_key"].map(valid_cpfs)
+    result.loc[restored_cpf.notna(), "Lead.cpf"] = restored_cpf[restored_cpf.notna()]
+    result = result.sort_values("_source_order", kind="stable")
+    return result.drop(columns=["_source_order", "_merge_key", "_updated_at"], errors="ignore").reset_index(drop=True)
 
 
 def _parse_datetime(series: pd.Series) -> pd.Series:
@@ -422,28 +471,51 @@ def build_dashboard_data(
     prepared_production = None
     matched_postlead = None
     if production is not None:
-        missing_production_columns = PRODUCTION_COLUMNS - set(production.columns)
-        if missing_production_columns:
+        production_columns = set(production.columns)
+        missing_production_columns = PRODUCTION_REQUIRED_COLUMNS - production_columns
+        production_date_column = next(
+            (column for column in PRODUCTION_DATE_COLUMNS if column in production_columns),
+            None,
+        )
+        if missing_production_columns or production_date_column is None:
             raise SourceFormatError(
-                "Colunas de produção ausentes: " + ", ".join(sorted(missing_production_columns))
+                "A produção precisa de CPF, indicador de produção e uma data em "
+                + " ou ".join(PRODUCTION_DATE_COLUMNS)
+                + (": " + ", ".join(sorted(missing_production_columns)) if missing_production_columns else "")
             )
         prepared_production = production.copy()
         prepared_production["_cpf"] = prepared_production["do_cpf_cliente"].map(_normalize_cpf)
         prepared_production["_contract_date"] = _parse_local_datetime(
-            prepared_production["dt_contrato"]
+            prepared_production[production_date_column]
         ).dt.normalize()
         prepared_production["_is_production"] = _as_bool(prepared_production["ic_producao"])
         contract_column = prepared_production.get("nu_contrato", pd.Series(index=prepared_production.index, dtype=str))
         prepared_production["_contract_id"] = contract_column.map(_contract_id)
-        released_column = prepared_production.get("vl_liberado", pd.Series(0, index=prepared_production.index))
+        value_column = next(
+            (column for column in ("vl_liberado", "vl_producao_total", "vl_producao") if column in production_columns),
+            None,
+        )
+        released_column = (
+            prepared_production[value_column]
+            if value_column
+            else pd.Series(0, index=prepared_production.index)
+        )
         prepared_production["_released_value"] = pd.to_numeric(released_column, errors="coerce").fillna(0.0)
         product_column = prepared_production.get("no_produto", pd.Series("Sem informação", index=prepared_production.index))
         prepared_production["_product"] = product_column.fillna("Sem informação").replace("", "Sem informação")
-        uf_column = prepared_production.get("no_cliente_uf", pd.Series("", index=prepared_production.index))
+        uf_column_name = "no_cliente_uf" if "no_cliente_uf" in production_columns else "sg_uf"
+        uf_column = prepared_production.get(uf_column_name, pd.Series("", index=prepared_production.index))
         prepared_production["_region"] = uf_column.map(_region_from_uf)
         effective = prepared_production[
-            prepared_production["_is_production"] & prepared_production["_cpf"].notna()
-        ]
+            prepared_production["_is_production"]
+            & prepared_production["_cpf"].notna()
+            & prepared_production["_contract_date"].notna()
+        ].copy()
+        identified_contracts = effective[effective["_contract_id"].notna()].sort_values(
+            ["_contract_date", "_contract_id"], kind="stable"
+        ).drop_duplicates("_contract_id", keep="first")
+        unidentified_contracts = effective[effective["_contract_id"].isna()]
+        effective = pd.concat([identified_contracts, unidentified_contracts], ignore_index=True)
         matched = effective.merge(
             cohort[["_cpf", "_origin", "_lead_date"]],
             on="_cpf",

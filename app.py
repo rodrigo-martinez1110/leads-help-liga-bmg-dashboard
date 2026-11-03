@@ -140,20 +140,20 @@ k4.metric(
     help="Total de contratos dentro do intervalo e dos filtros de origem, produto e região.",
 )
 k5.metric(
-    "Valor liberado",
+    "Valor total da produção",
     _fmt_brl(released),
-    help="Soma do valor liberado nos contratos considerados pelos filtros selecionados.",
+    help="Soma de vl_producao_total nos contratos considerados pelos filtros selecionados.",
 )
 k6.metric(
-    "Ticket médio",
+    "Ticket médio de produção",
     _fmt_brl(ticket),
-    help="Valor liberado dividido pela quantidade de contratos considerados pelos filtros selecionados.",
+    help="Valor total de produção dividido pela quantidade de contratos distintos considerados pelos filtros selecionados.",
 )
 
 st.info(
     f"Período selecionado: {selected_start:%d/%m/%Y} a {selected_end:%d/%m/%Y}. "
     f"Origem selecionada: {selected_origin}. "
-    "A associação de produção é temporal por CPF, no mesmo dia ou depois da entrada do lead."
+    "A associação usa CPF e dt_referencia igual ou posterior ao primeiro lead. A referência é mensal, então não mostra a ordem exata entre lead e produção dentro do mesmo mês."
 )
 
 st.subheader("Distribuição por origem")

@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from data_pipeline import build_dashboard_data, parse_origin_mapping, read_sources
+from data_pipeline import build_dashboard_data, merge_lead_frames, parse_origin_mapping, read_sources
 from public_data import serialize_dashboard_data
 
 
@@ -16,12 +16,24 @@ DEFAULT_MAPPING = ROOT / "origin_mapping.txt"
 
 
 def generate_public_artifact(
-    leads_path: Path,
+    leads_paths: list[Path] | Path,
     production_path: Path | None,
     mapping_path: Path,
     destination: Path,
 ) -> None:
-    leads, production = read_sources(leads_path, production_path)
+    paths = [leads_paths] if isinstance(leads_paths, Path) else list(leads_paths)
+    if not paths:
+        raise ValueError("Informe pelo menos um arquivo de leads.")
+
+    first_leads, production = read_sources(paths[0], production_path)
+    lead_frames = [first_leads]
+    for leads_path in paths[1:]:
+        next_leads, embedded_production = read_sources(leads_path)
+        lead_frames.append(next_leads)
+        if production_path is None and embedded_production is not None:
+            production = embedded_production
+
+    leads = merge_lead_frames(lead_frames)
     mapping = parse_origin_mapping(mapping_path.read_text(encoding="utf-8-sig"))
     dashboard = build_dashboard_data(leads, production, mapping)
     payload = serialize_dashboard_data(dashboard)
@@ -40,8 +52,8 @@ def generate_public_artifact(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gera o JSON agregado público a partir de relatórios locais.")
-    parser.add_argument("--leads", type=Path, required=True, help="XLSX/CSV/ZIP de leads")
-    parser.add_argument("--production", type=Path, help="Relatório de produção separado (opcional se estiver dentro do ZIP)")
+    parser.add_argument("--leads", type=Path, nargs="+", required=True, help="Um ou mais arquivos XLSX/CSV/ZIP de leads; registros repetidos são consolidados por Lead.leadId")
+    parser.add_argument("--production", type=Path, help="Relatório de produção separado (opcional se estiver dentro do primeiro ZIP)")
     parser.add_argument("--mapping", type=Path, default=DEFAULT_MAPPING, help="Mapeamento local de origens")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destino do JSON agregado público")
     return parser

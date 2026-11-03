@@ -16,11 +16,12 @@ O Streamlit hospedado lê somente `dashboard_data_public.json`, que contém KPIs
 
    ```powershell
    .\.venv\Scripts\python.exe .\generate_public_data.py `
-     --leads "C:\caminho\relatorio-da-semana.xlsx" `
+     --leads "C:\caminho\base-completa.zip" "C:\caminho\leads-incrementais.csv" `
+     --production "C:\caminho\producao-atualizada.zip" `
      --mapping .\origin_mapping.txt
    ```
 
-   Se a produção estiver em arquivo separado, informe também `--production "C:\caminho\producao.xlsx"`.
+   Informe todos os arquivos de leads em `--leads`. O gerador consolida registros repetidos por `Lead.leadId` e mantém CPFs válidos. A produção pode vir em um ZIP ou CSV separado.
 
 4. Confira os indicadores localmente e publique somente o código e `dashboard_data_public.json`. Nunca force a inclusão de XLSX, CSV, ZIP, `origin_mapping.txt`, `dashboard_data.json` ou arquivos de ambiente.
 
@@ -34,7 +35,8 @@ O arquivo público é atualizado junto ao repositório e o Streamlit Cloud o lê
 - A origem é identificada pela coluna `Lead.numeroWhatsappOrigem` usando o mapeamento privado. Registros sem telefone, mas identificados como `agenda-mais` no CRM, são agrupados separadamente.
 - Para CPFs repetidos, a pessoa e seus registros ficam associados à origem de seu primeiro lead válido.
 - Os filtros de origem, produto e região recalculam os KPIs e gráficos a partir das tabelas agregadas.
-- Produção pós-lead exige `ic_producao = 1` e data do contrato igual ou posterior à data de entrada do primeiro lead. É uma associação temporal, não uma prova de causalidade.
+- Produção pós-lead exige `ic_producao = 1` e data do contrato ou `dt_referencia` igual ou posterior à data de entrada do primeiro lead. Quando `dt_referencia` é mensal, a ordem exata entre lead e produção dentro do mesmo mês não fica identificada. É uma associação temporal, não uma prova de causalidade.
+- Contratos são contados por `nu_contrato` distinto, região por UF, e o painel usa `vl_producao_total` quando o arquivo não traz `vl_liberado`.
 - “Sem produção pós-lead” não significa perda comercial confirmada.
 
 ## Filtros do painel
