@@ -91,10 +91,41 @@ if not scope.empty:
     scope = scope[scope["data_entrada"].between(selected_start, selected_end, inclusive="both")]
 product_options = sorted(scope["produto"].dropna().unique().tolist()) if not scope.empty else []
 region_options = sorted(scope["regiao"].dropna().unique().tolist()) if not scope.empty else []
+store_dimension = view.store_options
+franchise_options = sorted(store_dimension["franqueado"].dropna().unique().tolist())
+selected_franchise = st.sidebar.selectbox("Franqueado", ["Todos", *franchise_options])
+franchise_scope = (
+    scope if selected_franchise == "Todos" else scope[scope["franqueado"] == selected_franchise]
+)
+store_pairs = (
+    store_dimension.loc[
+        store_dimension["franqueado"].eq(selected_franchise) if selected_franchise != "Todos"
+        else pd.Series(True, index=store_dimension.index),
+        ["loja_codigo", "loja"],
+    ]
+    .drop_duplicates()
+    .sort_values(["loja", "loja_codigo"])
+    if not store_dimension.empty
+    else pd.DataFrame(columns=["loja_codigo", "loja"])
+)
+store_labels = {
+    f"{row.loja_codigo or 'Sem código'} — {row.loja}": str(row.loja_codigo)
+    for row in store_pairs.itertuples(index=False)
+}
+store_options = list(store_labels)
+if st.session_state.get("store_filter", "Todas") not in {"Todas", *store_options}:
+    st.session_state["store_filter"] = "Todas"
+selected_store = st.sidebar.selectbox("Loja", ["Todas", *store_options], key="store_filter")
 selected_product = st.sidebar.selectbox("Produto", ["Todos", *product_options])
 selected_region = st.sidebar.selectbox("Região do cliente", ["Todas", *region_options])
-st.sidebar.caption("Período e origem atualizam toda a visão. Produto e região filtram a visão financeira.")
+st.sidebar.caption(
+    "Período e origem atualizam toda a visão. Franqueado, loja, produto e região filtram a visão financeira."
+)
 
+scope = franchise_scope
+if selected_store != "Todas":
+    selected_store_code = store_labels[selected_store]
+    scope = scope[scope["loja_codigo"].astype(str) == selected_store_code]
 if selected_product != "Todos":
     scope = scope[scope["produto"] == selected_product]
 if selected_region != "Todas":

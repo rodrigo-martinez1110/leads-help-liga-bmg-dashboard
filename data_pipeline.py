@@ -4,7 +4,7 @@ import io
 import math
 import re
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
@@ -47,6 +47,9 @@ class DashboardView:
     production_by_region: pd.DataFrame
     production_scope: pd.DataFrame
     origin_summary: pd.DataFrame
+    store_options: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["franqueado", "loja_codigo", "loja"])
+    )
 
 
 @dataclass(frozen=True)
@@ -260,6 +263,38 @@ def merge_lead_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return result.drop(columns=["_source_order", "_merge_key", "_updated_at"], errors="ignore").reset_index(drop=True)
 
 
+def read_store_dimension(path: Path | None) -> dict[str, str]:
+    """Read only store code and display name from a private dimension export."""
+    if path is None:
+        return {}
+    required = {"cod_loja_atual", "nome_loja"}
+    try:
+        dimension = pd.read_csv(
+            path,
+            dtype=str,
+            encoding="utf-8-sig",
+            sep=None,
+            engine="python",
+            usecols=lambda column: column in required,
+        )
+    except (OSError, UnicodeError, pd.errors.ParserError) as error:
+        raise SourceFormatError(f"Não foi possível ler a dimensão de lojas: {error}") from error
+    missing = required - set(dimension.columns)
+    if missing:
+        raise SourceFormatError("Colunas ausentes na dimensão de lojas: " + ", ".join(sorted(missing)))
+
+    dimension = dimension.copy()
+    dimension["_store_code"] = dimension["cod_loja_atual"].map(_normalize_store_code)
+    dimension["_store_name"] = dimension["nome_loja"].fillna("").astype(str).str.strip()
+    dimension = dimension[dimension["_store_code"].notna() & dimension["_store_name"].ne("")]
+    return (
+        dimension.drop_duplicates(["_store_code", "_store_name"])
+        .drop_duplicates("_store_code", keep="first")
+        .set_index("_store_code")["_store_name"]
+        .to_dict()
+    )
+
+
 def _parse_datetime(series: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(series, errors="coerce", utc=True)
     return parsed.dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
@@ -280,6 +315,22 @@ def _as_bool(series: pd.Series) -> pd.Series:
 def _contract_id(value: Any) -> str | None:
     digits = _clean_number(value)
     return digits if digits and set(digits) != {"0"} else None
+
+
+def _normalize_store_code(value: Any) -> str | None:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"nan", "none", "nat"}:
+        return None
+    try:
+        number = Decimal(raw.replace(",", "."))
+        if number.is_finite() and number == number.to_integral_value():
+            return str(int(number))
+    except InvalidOperation:
+        pass
+    normalized = re.sub(r"\s+", "", raw).upper()
+    return normalized or None
 
 
 def _region_from_uf(value: Any) -> str:
@@ -308,6 +359,7 @@ def _build_view(
     matched_postlead: pd.DataFrame | None,
     origin_summary: pd.DataFrame,
     production_available: bool,
+    store_options: pd.DataFrame,
 ) -> DashboardView:
     lead_scope = leads if origin == ALL_ORIGINS else leads[leads["_origin"] == origin]
     cohort_scope = cohort if origin == ALL_ORIGINS else cohort[cohort["_origin"] == origin]
@@ -352,7 +404,10 @@ def _build_view(
     if not production_available or postlead_contracts.empty:
         product = _empty_production_frame(["produto", "contratos", "valor_liberado"])
         region = _empty_production_frame(["regiao", "contratos", "valor_liberado"])
-        scope = _empty_production_frame(["data_entrada", "produto", "regiao", "contratos", "valor_liberado"])
+        scope = _empty_production_frame([
+            "data_entrada", "produto", "regiao", "franqueado", "loja_codigo", "loja",
+            "contratos", "valor_liberado",
+        ])
     else:
         product = (
             postlead_contracts.groupby("_product", dropna=False)
@@ -367,10 +422,20 @@ def _build_view(
             .rename(columns={"_region": "regiao"})
         )
         scope = (
-            postlead_contracts.groupby(["_lead_date", "_product", "_region"], dropna=False)
+            postlead_contracts.groupby(
+                ["_lead_date", "_product", "_region", "_franchise", "_store_code", "_store_name"],
+                dropna=False,
+            )
             .agg(contratos=("_contract_id", "nunique"), valor_liberado=("_released_value", "sum"))
             .reset_index()
-            .rename(columns={"_lead_date": "data_entrada", "_product": "produto", "_region": "regiao"})
+            .rename(columns={
+                "_lead_date": "data_entrada",
+                "_product": "produto",
+                "_region": "regiao",
+                "_franchise": "franqueado",
+                "_store_code": "loja_codigo",
+                "_store_name": "loja",
+            })
         )
 
     postlead_ids = set(cohort_scope.loc[cohort_scope["_cpf"].isin(
@@ -431,6 +496,7 @@ def _build_view(
         production_by_region=region,
         production_scope=scope,
         origin_summary=origin_summary,
+        store_options=store_options,
     )
 
 
@@ -438,6 +504,7 @@ def build_dashboard_data(
     leads: pd.DataFrame,
     production: pd.DataFrame | None,
     origin_mapping: Mapping[str, str],
+    store_mapping: Mapping[str, str] | None = None,
 ) -> DashboardData:
     missing_lead_columns = LEAD_COLUMNS - set(leads.columns)
     if missing_lead_columns:
@@ -470,6 +537,7 @@ def build_dashboard_data(
 
     prepared_production = None
     matched_postlead = None
+    store_options = pd.DataFrame(columns=["franqueado", "loja_codigo", "loja"])
     if production is not None:
         production_columns = set(production.columns)
         missing_production_columns = PRODUCTION_REQUIRED_COLUMNS - production_columns
@@ -503,6 +571,34 @@ def build_dashboard_data(
         prepared_production["_released_value"] = pd.to_numeric(released_column, errors="coerce").fillna(0.0)
         product_column = prepared_production.get("no_produto", pd.Series("Sem informação", index=prepared_production.index))
         prepared_production["_product"] = product_column.fillna("Sem informação").replace("", "Sem informação")
+        store_code_column = prepared_production.get("co_loja_atual", pd.Series(index=prepared_production.index, dtype=str))
+        prepared_production["_store_code"] = store_code_column.map(_normalize_store_code).fillna("Sem código")
+        normalized_store_mapping = {
+            normalized: str(name).strip()
+            for code, name in (store_mapping or {}).items()
+            if (normalized := _normalize_store_code(code)) and str(name).strip()
+        }
+        prepared_production["_store_name"] = prepared_production["_store_code"].map(normalized_store_mapping)
+        prepared_production.loc[
+            prepared_production["_store_code"].notna() & prepared_production["_store_name"].isna(),
+            "_store_name",
+        ] = "Nome indisponível"
+        prepared_production.loc[
+            prepared_production["_store_code"].eq("Sem código"), "_store_name"
+        ] = "Código indisponível"
+        franchise_column = prepared_production.get(
+            "no_franqueado_atual", pd.Series("Sem informação", index=prepared_production.index)
+        )
+        prepared_production["_franchise"] = (
+            franchise_column.fillna("").astype(str).str.strip().replace("", "Sem informação")
+        )
+        store_options = (
+            prepared_production[["_franchise", "_store_code", "_store_name"]]
+            .drop_duplicates()
+            .rename(columns={"_franchise": "franqueado", "_store_code": "loja_codigo", "_store_name": "loja"})
+            .sort_values(["franqueado", "loja", "loja_codigo"])
+            .reset_index(drop=True)
+        )
         uf_column_name = "no_cliente_uf" if "no_cliente_uf" in production_columns else "sg_uf"
         uf_column = prepared_production.get(uf_column_name, pd.Series("", index=prepared_production.index))
         prepared_production["_region"] = uf_column.map(_region_from_uf)
@@ -586,6 +682,7 @@ def build_dashboard_data(
             matched_postlead,
             selected_summary.reset_index(drop=True),
             production is not None,
+            store_options,
         )
 
     lead_dates = prepared["_lead_date"].dropna()

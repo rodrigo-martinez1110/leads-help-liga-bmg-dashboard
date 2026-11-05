@@ -6,7 +6,13 @@ import os
 import tempfile
 from pathlib import Path
 
-from data_pipeline import build_dashboard_data, merge_lead_frames, parse_origin_mapping, read_sources
+from data_pipeline import (
+    build_dashboard_data,
+    merge_lead_frames,
+    parse_origin_mapping,
+    read_sources,
+    read_store_dimension,
+)
 from public_data import serialize_dashboard_data
 
 
@@ -20,6 +26,7 @@ def generate_public_artifact(
     production_path: Path | None,
     mapping_path: Path,
     destination: Path,
+    store_dimension_path: Path | None = None,
 ) -> None:
     paths = [leads_paths] if isinstance(leads_paths, Path) else list(leads_paths)
     if not paths:
@@ -35,7 +42,8 @@ def generate_public_artifact(
 
     leads = merge_lead_frames(lead_frames)
     mapping = parse_origin_mapping(mapping_path.read_text(encoding="utf-8-sig"))
-    dashboard = build_dashboard_data(leads, production, mapping)
+    store_mapping = read_store_dimension(store_dimension_path)
+    dashboard = build_dashboard_data(leads, production, mapping, store_mapping)
     payload = serialize_dashboard_data(dashboard)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_name = None
@@ -55,13 +63,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--leads", type=Path, nargs="+", required=True, help="Um ou mais arquivos XLSX/CSV/ZIP de leads; registros repetidos são consolidados por Lead.leadId")
     parser.add_argument("--production", type=Path, help="Relatório de produção separado (opcional se estiver dentro do primeiro ZIP)")
     parser.add_argument("--mapping", type=Path, default=DEFAULT_MAPPING, help="Mapeamento local de origens")
+    parser.add_argument("--store-dimension", type=Path, help="CSV privado com `cod_loja_atual` e `nome_loja`; outros campos são ignorados")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destino do JSON agregado público")
     return parser
 
 
 def main() -> None:
     args = _parser().parse_args()
-    generate_public_artifact(args.leads, args.production, args.mapping, args.output)
+    generate_public_artifact(args.leads, args.production, args.mapping, args.output, args.store_dimension)
     print(f"Agregado público atualizado: {args.output}")
 
 
